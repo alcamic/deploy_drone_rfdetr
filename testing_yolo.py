@@ -4,13 +4,13 @@ import mss
 import pygetwindow as gw
 import torch
 import time
-from collections import deque # [TAMBAHAN] Import deque untuk menyimpan riwayat data
+from collections import deque
 
 import supervision as sv
-from rfdetr import RFDETRMedium
+from ultralytics import YOLO #
 
-def run_custom_rfdetr():
-    print("=== SISTEM DETEKSI DRONE MEMULAI ===")
+def run_yolo_detector():
+    print("=== SISTEM DETEKSI DRONE MEMULAI (VERSI YOLO) ===")
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         print(f"[INFO] GPU Terdeteksi: {gpu_name}")
@@ -19,16 +19,9 @@ def run_custom_rfdetr():
         print("[WARN] GPU tidak terdeteksi! PyTorch akan menggunakan CPU.")
         print("[WARN] FPS mungkin akan sangat rendah/patah-patah.")
 
-    CUSTOM_CLASSES = ["person"]
-
-    print("\n[INFO] Memuat custom weights 'checkpoint_best_total.pth'...")
-    model = RFDETRMedium(
-        pretrain_weights="checkpoint_best_total.pth",
-        num_classes=len(CUSTOM_CLASSES) 
-    )
-    
-    print("[INFO] Mengoptimasi model untuk inference real-time...")
-    model.optimize_for_inference()
+    print("\n[INFO] Memuat bobot model YOLO 'best.pt'...")
+    # [UBAH] Load model YOLO. Ultralytics otomatis menggunakan GPU jika tersedia.
+    model = YOLO("yolo12m_finetune.pt") 
 
     sct = mss.MSS()
     box_annotator = sv.BoxAnnotator()
@@ -41,7 +34,7 @@ def run_custom_rfdetr():
 
     prev_frame_time = 0
     
-    # [TAMBAHAN] Inisialisasi penyimpan riwayat (history) untuk 60 frame terakhir
+    # Inisialisasi penyimpan riwayat (history) untuk 60 frame terakhir
     history_length = 60
     fps_history = deque(maxlen=history_length)
     latency_history = deque(maxlen=history_length)
@@ -72,12 +65,14 @@ def run_custom_rfdetr():
         
         frame_bgr = np.array(sct_img)
         frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_BGRA2BGR)
+        # YOLO v8/v9/v11 Ultralytics bisa menerima BGR langsung, tapi menggunakan RGB lebih aman secara standar
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         
         # --- MULAI HITUNG LATENCY ---
         start_inference_time = time.time()
         
-        detections = model.predict(frame_rgb, threshold=0.5)
+        # [UBAH] Inferensi menggunakan YOLO. verbose=False agar terminal tidak penuh dengan log
+        results = model(frame_rgb, conf=0.5, verbose=False)[0]
         
         end_inference_time = time.time()
         
@@ -86,13 +81,14 @@ def run_custom_rfdetr():
         latency_history.append(latency_ms)
         # --- SELESAI HITUNG LATENCY ---
         
-        labels = []
-        for class_id, confidence in zip(detections.class_id, detections.confidence):
-            if class_id < len(CUSTOM_CLASSES):
-                class_name = CUSTOM_CLASSES[class_id]
-            else:
-                class_name = f"Unknown_{class_id}"
-            labels.append(f"{class_name} {confidence:.2f}")
+        # [UBAH] Konversi hasil Ultralytics ke format Supervision
+        detections = sv.Detections.from_ultralytics(results)
+        
+        # [UBAH] Generate Label. YOLO menyimpan nama class di dalam model.names
+        labels = [
+            f"{model.names[class_id]} {confidence:.2f}"
+            for class_id, confidence in zip(detections.class_id, detections.confidence)
+        ]
         
         annotated_frame = box_annotator.annotate(scene=frame_bgr.copy(), detections=detections)
         annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
@@ -107,7 +103,7 @@ def run_custom_rfdetr():
         fps_history.append(fps)
         # --- SELESAI HITUNG FPS ---
 
-        # [TAMBAHAN] Hitung Nilai Rata-rata (Avg), Minimum (Min), dan Maksimum (Max)
+        # Hitung Nilai Rata-rata (Avg), Minimum (Min), dan Maksimum (Max)
         avg_fps = sum(fps_history) / len(fps_history)
         min_fps = min(fps_history)
         max_fps = max(fps_history)
@@ -116,7 +112,7 @@ def run_custom_rfdetr():
         min_lat = min(latency_history)
         max_lat = max(latency_history)
         
-        # [TAMBAHAN] Buat format teks untuk ditampilkan (menggunakan font sedikit lebih kecil agar muat)
+        # Buat format teks untuk ditampilkan
         text_fps = f"FPS -> Avg: {int(avg_fps)} | Min: {int(min_fps)} | Max: {int(max_fps)}"
         text_lat = f"Lat -> Avg: {avg_lat:.1f}ms | Min: {min_lat:.1f}ms | Max: {max_lat:.1f}ms"
 
@@ -126,7 +122,7 @@ def run_custom_rfdetr():
         # Tampilkan teks Latency (Merah)
         cv2.putText(annotated_frame, text_lat, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
 
-        cv2.imshow("RF-DETR (GPU Mode) - DJI Air 3S", annotated_frame)
+        cv2.imshow("YOLO (GPU Mode) - DJI Air 3S", annotated_frame)
         
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("\n[INFO] Menutup program...")
@@ -135,4 +131,4 @@ def run_custom_rfdetr():
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    run_custom_rfdetr()
+    run_yolo_detector()
